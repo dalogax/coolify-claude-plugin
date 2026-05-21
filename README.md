@@ -62,10 +62,8 @@ The CLI reads the same `.env` variables as the skill.
 coolify/
 ├── .claude-plugin/
 │   └── plugin.json          # Plugin metadata
-├── skills/
-│   └── coolify/
-│       └── SKILL.md         # Model-invoked skill
 ├── commands/
+│   ├── coolify.md           # Skill (model-invoked + /coolify command)
 │   └── coolify-setup.md     # /coolify-setup slash command
 ├── scripts/
 │   └── coolify              # Optional bash CLI
