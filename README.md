@@ -42,31 +42,34 @@ Just describe what you want in natural language. Claude will handle the API call
 "the app is returning 502, help me debug it"
 ```
 
-## Optional: install the CLI
+## CLI tool
 
-Run `/coolify-setup` to install the `coolify` CLI to `~/.local/bin/coolify`. This lets you run Coolify commands directly in your terminal without going through Claude:
+A `coolify` CLI is bundled with this plugin and automatically available in your shell when the plugin is active. It reads the same `.env` variables:
 
 ```bash
-coolify status
-coolify logs 200
-coolify deploy
-coolify envs
-coolify set-env KEY value
+coolify status             # App status + health
+coolify logs [N]           # Last N log lines (default 100)
+coolify deploy             # Trigger a new build + deployment
+coolify deploy true        # Force rebuild (ignores Docker cache)
+coolify restart            # Restart container without rebuild
+coolify start / stop       # Start or stop the container
+coolify deployments        # Recent deployment history
+coolify envs               # List all production env vars
+coolify set-env KEY VALUE  # Create or update a production env var
+coolify del-env KEY        # Delete a production env var
+coolify version            # Coolify server version
 ```
-
-The CLI reads the same `.env` variables as the skill.
 
 ## Plugin structure
 
 ```
 coolify/
 ├── .claude-plugin/
-│   └── plugin.json          # Plugin metadata
+│   └── plugin.json     # Plugin metadata
 ├── commands/
-│   ├── coolify.md           # Skill (model-invoked + /coolify command)
-│   └── coolify-setup.md     # /coolify-setup slash command
-├── scripts/
-│   └── coolify              # Optional bash CLI
+│   └── coolify.md      # Skill (model-invoked + /coolify command)
+├── bin/
+│   └── coolify         # Bash CLI (auto-added to PATH by the plugin)
 └── README.md
 ```
 

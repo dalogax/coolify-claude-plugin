@@ -33,9 +33,9 @@ curl -s -H "Authorization: Bearer $COOLIFY_API_TOKEN" \
   "$COOLIFY_URL/api/v1/applications" | jq '.[] | {name, uuid}'
 ```
 
-## CLI tool (optional)
+## CLI tool
 
-If the user has run `/coolify-setup`, a `coolify` CLI is available at `~/.local/bin/coolify`. Use it for common operations:
+A `coolify` CLI is bundled with this plugin and automatically available in your shell (via the plugin's `bin/` directory). Use it for common operations:
 
 ```bash
 coolify status             # App status + health
