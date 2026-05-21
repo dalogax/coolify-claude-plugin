@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# Coolify CLI — manage a Coolify-hosted application from any project directory.
+#
+# Reads config from the nearest .env file walking up from $PWD, or from
+# COOLIFY_ENV_FILE env var. Required vars: COOLIFY_URL, COOLIFY_API_TOKEN,
+# COOLIFY_APP_UUID. Optional: COOLIFY_APPLICATION_NAME.
+#
+# Generate an API token at: $COOLIFY_URL/keys-and-tokens
+set -euo pipefail
+
+# ── Find .env ─────────────────────────────────────────────────────────────────
+find_env_file() {
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    [[ -f "$dir/.env" ]] && echo "$dir/.env" && return
+    dir="$(dirname "$dir")"
+  done
+}
+
+ENV_FILE="${COOLIFY_ENV_FILE:-$(find_env_file || true)}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  set +a
+fi
+
+COOLIFY_URL="${COOLIFY_URL:-}"
+COOLIFY_API_TOKEN="${COOLIFY_API_TOKEN:-}"
+APP_UUID="${COOLIFY_APP_UUID:-}"
+APP_NAME="${COOLIFY_APPLICATION_NAME:-app}"
+API="$COOLIFY_URL/api/v1"
+RESP_FILE="/tmp/coolify_api_response"
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
+
+err()  { echo -e "${RED}[error]${RESET} $*" >&2; exit 1; }
+info() { echo -e "${BLUE}[info]${RESET}  $*"; }
+ok()   { echo -e "${GREEN}[ok]${RESET}    $*"; }
+warn() { echo -e "${YELLOW}[warn]${RESET}  $*"; }
+
+# ── Prereqs ───────────────────────────────────────────────────────────────────
+check_requirements() {
+  command -v curl >/dev/null 2>&1 || err "curl is required"
+  command -v jq   >/dev/null 2>&1 || err "jq is required"
+  [[ -n "$COOLIFY_URL" ]] || err "COOLIFY_URL not set. Add it to .env"
+  [[ -n "$APP_UUID" ]]    || err "COOLIFY_APP_UUID not set. Add it to .env"
+  if [[ -z "$COOLIFY_API_TOKEN" ]]; then
+    echo ""
+    echo -e "${YELLOW}COOLIFY_API_TOKEN is not set in .env${RESET}"
+    echo ""
+    echo "  1. Open: $COOLIFY_URL/keys-and-tokens"
+    echo "  2. Create an API token (not your UI password)"
+    echo "  3. Add to .env:"
+    echo "       COOLIFY_API_TOKEN=your-token-here"
+    echo ""
+    exit 1
+  fi
+}
+
+# ── API helper ────────────────────────────────────────────────────────────────
+api() {
+  local method="$1" path="$2" body="${3:-}"
+  local args=(-s -X "$method" "$API$path"
+    -H "Authorization: Bearer $COOLIFY_API_TOKEN"
+    -H "Content-Type: application/json"
+    -H "Accept: application/json")
+  [[ -n "$body" ]] && args+=(-d "$body")
+
+  local http_code
+  http_code=$(curl "${args[@]}" -o "$RESP_FILE" -w "%{http_code}")
+
+  case "$http_code" in
+    200|201|202|204) cat "$RESP_FILE" ;;
+    401) err "Authentication failed (401). Regenerate COOLIFY_API_TOKEN at $COOLIFY_URL/keys-and-tokens" ;;
+    404) err "Not found (404). Check COOLIFY_APP_UUID and COOLIFY_URL in .env" ;;
+    *)   err "API error $http_code: $(cat "$RESP_FILE" 2>/dev/null)" ;;
+  esac
+}
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+cmd_status() {
+  check_requirements
+  info "Fetching status for '$APP_NAME'..."
+  local app
+  app=$(api GET "/applications/$APP_UUID")
+
+  local name status health fqdn updated
+  name=$(echo "$app"    | jq -r '.name          // "unknown"')
+  status=$(echo "$app"  | jq -r '.status        // "unknown"')
+  health=$(echo "$app"  | jq -r '.health_status // "unknown"')
+  fqdn=$(echo "$app"    | jq -r '.fqdn          // "-"')
+  updated=$(echo "$app" | jq -r '.updated_at    // "-"')
+
+  echo ""
+  echo -e "${BOLD}Application:${RESET}   $name  (uuid: $APP_UUID)"
+  echo -e "${BOLD}URL:${RESET}           $fqdn"
+  echo -e "${BOLD}Last updated:${RESET}  $updated"
+
+  case "$status" in
+    running)        printf "${BOLD}Status:${RESET}        ${GREEN}%s${RESET}\n" "$status" ;;
+    stopped|exited) printf "${BOLD}Status:${RESET}        ${RED}%s${RESET}\n"   "$status" ;;
+    *)              printf "${BOLD}Status:${RESET}        ${YELLOW}%s${RESET}\n" "$status" ;;
+  esac
+
+  case "$health" in
+    healthy)   printf "${BOLD}Health:${RESET}        ${GREEN}%s${RESET}\n" "$health" ;;
+    unhealthy) printf "${BOLD}Health:${RESET}        ${RED}%s${RESET}\n"   "$health" ;;
+    *)         printf "${BOLD}Health:${RESET}        ${YELLOW}%s${RESET}\n" "$health" ;;
+  esac
+  echo ""
+}
+
+cmd_logs() {
+  check_requirements
+  local lines="${1:-100}"
+  info "Fetching last $lines log lines for '$APP_NAME'..."
+  api GET "/applications/$APP_UUID/logs?lines=$lines" | jq -r '.logs // .' 2>/dev/null
+}
+
+cmd_deploy() {
+  check_requirements
+  local force="${1:-false}"
+  warn "Triggering deployment for '$APP_NAME' (force=$force)..."
+  local result
+  result=$(api GET "/deploy?uuid=$APP_UUID&force=$force")
+  echo "$result" | jq -r '.message // .' 2>/dev/null || echo "$result"
+  ok "Deployment queued."
+}
+
+cmd_restart() {
+  check_requirements
+  warn "Restarting '$APP_NAME'..."
+  api GET "/applications/$APP_UUID/restart" >/dev/null
+  ok "Restart initiated."
+}
+
+cmd_start() {
+  check_requirements
+  warn "Starting '$APP_NAME'..."
+  api GET "/applications/$APP_UUID/start" >/dev/null
+  ok "Start initiated."
+}
+
+cmd_stop() {
+  check_requirements
+  warn "Stopping '$APP_NAME'..."
+  api GET "/applications/$APP_UUID/stop" >/dev/null
+  ok "Stop initiated."
+}
+
+cmd_deployments() {
+  check_requirements
+  info "Recent deployments for '$APP_NAME':"
+  local result
+  result=$(api GET "/deployments/applications/$APP_UUID")
+  echo ""
+  # API returns either a plain array or {deployments: [...], count: N}
+  echo "$result" | jq -r '
+    (if type == "array" then . else .deployments // [] end)
+    | .[:20][]
+    | "[\(.created_at | split("T")[0])] \(.status | ascii_upcase) — \(.commit[:7] // "-") \(if .is_webhook then "(webhook)" else "" end)"
+  ' 2>/dev/null || echo "$result"
+  echo ""
+}
+
+cmd_envs() {
+  check_requirements
+  info "Production environment variables for '$APP_NAME':"
+  local result
+  result=$(api GET "/applications/$APP_UUID/envs")
+  echo ""
+  echo "$result" | jq -r '.[] | "\(.key)=\(.value // "")"' 2>/dev/null | sort || echo "$result"
+  echo ""
+}
+
+cmd_set_env() {
+  check_requirements
+  local key="${1:-}" value="${2:-}"
+  [[ -n "$key" ]]   || err "Usage: coolify set-env KEY VALUE"
+  [[ -n "$value" ]] || err "Usage: coolify set-env KEY VALUE"
+
+  local envs existing_uuid
+  envs=$(api GET "/applications/$APP_UUID/envs")
+  existing_uuid=$(echo "$envs" | jq -r --arg k "$key" '.[] | select(.key == $k) | .uuid // empty')
+
+  local body
+  if [[ -n "$existing_uuid" ]]; then
+    info "Updating existing $key..."
+    body=$(jq -n --arg k "$key" --arg v "$value" --arg u "$existing_uuid" \
+      '{"uuid":$u,"key":$k,"value":$v,"is_preview":false,"is_build_time":false}')
+    api PATCH "/applications/$APP_UUID/envs" "$body" >/dev/null
+  else
+    info "Creating $key..."
+    body=$(jq -n --arg k "$key" --arg v "$value" \
+      '{"key":$k,"value":$v,"is_preview":false,"is_build_time":false}')
+    api POST "/applications/$APP_UUID/envs" "$body" >/dev/null
+  fi
+  ok "Set $key. Run 'coolify deploy' to apply."
+}
+
+cmd_del_env() {
+  check_requirements
+  local key="${1:-}"
+  [[ -n "$key" ]] || err "Usage: coolify del-env KEY"
+
+  info "Looking up '$key'..."
+  local envs env_uuid
+  envs=$(api GET "/applications/$APP_UUID/envs")
+  env_uuid=$(echo "$envs" | jq -r --arg k "$key" '.[] | select(.key == $k) | .uuid // empty')
+  [[ -n "$env_uuid" ]] || err "Env var '$key' not found."
+
+  warn "Deleting $key..."
+  api DELETE "/applications/$APP_UUID/envs/$env_uuid" >/dev/null
+  ok "Deleted $key."
+}
+
+cmd_version() {
+  check_requirements
+  api GET "/version" | jq -r '.'
+}
+
+# ── Help ──────────────────────────────────────────────────────────────────────
+
+usage() {
+  echo ""
+  echo -e "${BOLD}coolify${RESET} — Coolify application CLI"
+  echo ""
+  echo -e "  ${BOLD}coolify${RESET} <command> [args]"
+  echo ""
+  echo -e "${BOLD}Commands:${RESET}"
+  printf "  %-24s %s\n" "status"              "Show app status and health"
+  printf "  %-24s %s\n" "logs [N]"            "Show last N log lines (default 100)"
+  printf "  %-24s %s\n" "deploy [force]"      "Trigger a new deployment (force=true skips cache)"
+  printf "  %-24s %s\n" "restart"             "Restart the running container"
+  printf "  %-24s %s\n" "start"               "Start a stopped container"
+  printf "  %-24s %s\n" "stop"                "Stop the container"
+  printf "  %-24s %s\n" "deployments"         "List recent deployment history"
+  printf "  %-24s %s\n" "envs"                "List all production env vars"
+  printf "  %-24s %s\n" "set-env KEY VALUE"   "Create or update a production env var"
+  printf "  %-24s %s\n" "del-env KEY"         "Delete a production env var"
+  printf "  %-24s %s\n" "version"             "Show Coolify server version"
+  echo ""
+  echo -e "${BOLD}Config (.env in project root):${RESET}"
+  echo "  COOLIFY_URL          Base URL of your Coolify instance"
+  echo "  COOLIFY_API_TOKEN    API token from \$COOLIFY_URL/keys-and-tokens"
+  echo "  COOLIFY_APP_UUID     Application UUID from the Coolify dashboard URL"
+  echo ""
+}
+
+# ── Dispatch ──────────────────────────────────────────────────────────────────
+
+COMMAND="${1:-}"
+[[ $# -gt 0 ]] && shift || true
+
+case "$COMMAND" in
+  status)            cmd_status ;;
+  logs)              cmd_logs "${1:-100}" ;;
+  deploy)            cmd_deploy "${1:-false}" ;;
+  restart)           cmd_restart ;;
+  start)             cmd_start ;;
+  stop)              cmd_stop ;;
+  deployments)       cmd_deployments ;;
+  envs)              cmd_envs ;;
+  set-env)           cmd_set_env "${1:-}" "${2:-}" ;;
+  del-env)           cmd_del_env "${1:-}" ;;
+  version)           cmd_version ;;
+  help|--help|-h|"") usage ;;
+  *) err "Unknown command: '$COMMAND'. Run 'coolify help'" ;;
+esac

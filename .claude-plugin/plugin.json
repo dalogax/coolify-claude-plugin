@@ -1,0 +1,9 @@
+{
+  "name": "coolify",
+  "description": "Manage, monitor, and troubleshoot applications hosted on a self-hosted Coolify instance. Check deployment status, view production logs, trigger redeploys, manage environment variables, and diagnose production issues — all from inside Claude Code.",
+  "author": {
+    "name": "Daniel Lopez Garcia",
+    "email": "dalogax@gmail.com"
+  },
+  "category": "devops"
+}
